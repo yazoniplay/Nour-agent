@@ -6,8 +6,9 @@ A mobile-first autonomous-agent command center that can be operated from a phone
 
 - Responsive dashboard and task creation.
 - FastAPI backend and SQLite task queue.
-- Background task execution using the official Google Gen AI Python SDK.
+- Background task execution using the official Google Gen AI Python SDK; tasks start automatically when created.
 - Google Search grounding for autonomous web research and source-informed answers.
+- Research, analysis, and outreach drafting; no automatic message sending or purchases.
 - Gemini model selection through the `GEMINI_MODEL` environment variable.
 - Render Blueprint and dashboard password protection.
 - Task status, result, and error display.
