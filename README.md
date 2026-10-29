@@ -1,12 +1,13 @@
 # Nour Agent
 
-A mobile-first personal-agent command center that can be operated from a phone. The current execution provider is Gemini.
+A mobile-first autonomous-agent command center that can be operated from a phone. It uses Gemini 3.5 Flash-Lite and Google Search grounding for web-informed task completion.
 
 ## Implemented
 
 - Responsive dashboard and task creation.
 - FastAPI backend and SQLite task queue.
 - Background task execution using the official Google Gen AI Python SDK.
+- Google Search grounding for autonomous web research and source-informed answers.
 - Gemini model selection through the `GEMINI_MODEL` environment variable.
 - Render Blueprint and dashboard password protection.
 - Task status, result, and error display.
@@ -17,7 +18,7 @@ A mobile-first personal-agent command center that can be operated from a phone. 
 1. Open [Google AI Studio](https://aistudio.google.com/) and create a Gemini API key. The API has a free tier with model and rate limits; check the current terms and usage dashboard.
 2. In Render, open your `nour-agent` service → **Environment**.
 3. Add `GEMINI_API_KEY` as a secret environment variable. Never put the key in `index.html`, a task prompt, or a GitHub commit.
-4. Set `GEMINI_MODEL` to a model available to your API project. The Blueprint default is `gemini-3.8-flash`; change it if your account cannot access that model.
+4. Set `GEMINI_MODEL` to a model available to your API project. The Blueprint default is `gemini-3.5-flash-lite`.
 5. Save changes and redeploy. Open the private service URL and log in.
 
 The Gemini website's free chat plan and the Gemini Developer API are separate products. Nour uses the API key, and API usage follows the API's free-tier limits; it is not unlimited.
@@ -54,4 +55,4 @@ The included free plan uses `/tmp/nour.db`. Render free instances may sleep and 
 - Tasks use the configured Gemini Developer API model.
 - Tasks time out after 10 minutes by default; configure `NOUR_TASK_TIMEOUT_SECONDS`.
 - `GEMINI_API_KEY` is read only on the server from the environment.
-- The MVP is intended for research, analysis, and draft generation. It does not send emails or perform irreversible external actions.
+- Nour can autonomously research public web information with Google Search, analyze evidence, and produce finished outputs or draft outreach. It does not send emails, contact prospects, make purchases, or perform irreversible external actions. Google Search grounding and Gemini API usage are subject to the limits and pricing shown in your Google AI Studio project.
