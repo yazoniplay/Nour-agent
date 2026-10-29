@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
-import shutil
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -14,6 +13,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from google import genai
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -21,8 +21,9 @@ DB_PATH = Path(os.environ.get("NOUR_DB_PATH", str(BASE_DIR / "data" / "nour.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 TASK_TIMEOUT_SECONDS = int(os.environ.get("NOUR_TASK_TIMEOUT_SECONDS", "600"))
 MAX_RESULT_CHARS = 30000
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
-app = FastAPI(title="Nour Agent", version="0.2.0", description="Mobile-first personal agent dashboard and subscription-CLI task runner.")
+app = FastAPI(title="Nour Agent", version="0.3.0", description="Mobile-first personal agent dashboard powered by Gemini.")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
 
@@ -38,7 +39,6 @@ def require_access(credentials: HTTPBasicCredentials = Depends(security)):
     return True
 
 
-
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
@@ -52,7 +52,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 prompt TEXT NOT NULL,
-                provider TEXT NOT NULL DEFAULT 'auto',
+                provider TEXT NOT NULL DEFAULT 'gemini',
                 priority TEXT NOT NULL DEFAULT 'normal',
                 status TEXT NOT NULL DEFAULT 'queued',
                 created_at TEXT NOT NULL,
@@ -75,7 +75,7 @@ init_db()
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     prompt: str = Field(min_length=1, max_length=5000)
-    provider: Literal["auto", "codex", "claude", "both"] = "auto"
+    provider: Literal["auto", "gemini"] = "gemini"
     priority: Literal["low", "normal", "high"] = "normal"
 
 
@@ -83,13 +83,12 @@ def task_dict(row):
     return {key: row[key] for key in row.keys()}
 
 
-def provider_status(name: str):
-    binary = "codex" if name == "codex" else "claude"
-    installed = shutil.which(binary) is not None
+def gemini_status():
+    configured = bool(os.environ.get("GEMINI_API_KEY", "").strip())
     return {
-        "installed": installed,
-        "connected": False,
-        "message": "CLI installed; authentication not yet verified" if installed else "CLI is not installed",
+        "configured": configured,
+        "model": GEMINI_MODEL,
+        "message": "Gemini API key configured" if configured else "Add GEMINI_API_KEY in the hosting environment",
     }
 
 
@@ -100,18 +99,18 @@ def dashboard():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "nour-agent", "version": "0.2.0"}
+    return {"ok": True, "service": "nour-agent", "version": "0.3.0"}
 
 
 @app.get("/api/status", dependencies=[Depends(require_access)])
 def status():
-    codex = provider_status("codex")
-    claude = provider_status("claude")
+    gemini = gemini_status()
     return {
         "service": "online",
-        "providers": {"codex": codex, "claude": claude},
-        "execution_enabled": codex["installed"] or claude["installed"],
-        "note": "Execution uses installed CLI tools. Each provider must be authenticated with its supported subscription sign-in on the host.",
+        "provider": "gemini",
+        "gemini": gemini,
+        "execution_enabled": gemini["configured"],
+        "note": "Tasks run through the Gemini Developer API. Keep GEMINI_API_KEY in the host's secret environment settings, never in browser code or GitHub.",
     }
 
 
@@ -128,42 +127,33 @@ def create_task(payload: TaskCreate):
     with closing(db()) as conn:
         cur = conn.execute(
             "INSERT INTO tasks (title, prompt, provider, priority, status, created_at) VALUES (?, ?, ?, ?, 'queued', ?)",
-            (payload.title.strip(), payload.prompt.strip(), payload.provider, payload.priority, created_at),
+            (payload.title.strip(), payload.prompt.strip(), "gemini", payload.priority, created_at),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cur.lastrowid,)).fetchone()
     return {"task": task_dict(row), "execution": "queued"}
 
 
-async def run_cli(provider: str, prompt: str) -> tuple[int, str, str]:
-    # Read-only / plan-style operation: task text is passed as one argument, never interpolated into a shell.
-    if provider == "codex":
-        binary = shutil.which("codex")
-        if not binary:
-            return 127, "", "Codex CLI is not installed on the execution host."
-        args = [binary, "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", prompt]
-    else:
-        binary = shutil.which("claude")
-        if not binary:
-            return 127, "", "Claude Code CLI is not installed on the execution host."
-        args = [binary, "-p", "--output-format", "text", "--permission-mode", "plan", prompt]
-
+async def call_gemini(prompt: str) -> str:
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Gemini is not configured yet. Add GEMINI_API_KEY in Render → Environment, then redeploy.")
+    client = genai.Client(api_key=api_key)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=str(BASE_DIR),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy(),
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.models.generate_content,
+                model=GEMINI_MODEL,
+                contents=prompt,
+            ),
+            timeout=TASK_TIMEOUT_SECONDS,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TASK_TIMEOUT_SECONDS)
-        return proc.returncode or 0, stdout.decode("utf-8", "replace")[-MAX_RESULT_CHARS:], stderr.decode("utf-8", "replace")[-8000:]
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return 124, "", f"Task timed out after {TASK_TIMEOUT_SECONDS} seconds."
-    except Exception as exc:
-        return 1, "", f"Could not run provider: {type(exc).__name__}: {exc}"
+        result = (getattr(response, "text", None) or "").strip()
+        if not result:
+            raise RuntimeError("Gemini returned no text. Check the selected model, API access, and usage limits.")
+        return result[:MAX_RESULT_CHARS]
+    finally:
+        await asyncio.to_thread(client.close)
 
 
 async def execute_task(task_id: int):
@@ -176,38 +166,24 @@ async def execute_task(task_id: int):
         conn.commit()
         task = task_dict(row)
 
-    requested = task["provider"]
-    if requested == "both":
-        providers = ["codex", "claude"]
-    elif requested == "auto":
-        providers = [name for name in ("codex", "claude") if shutil.which(name)]
-        providers = providers[:1]
-    else:
-        providers = [requested]
-
-    if not providers:
-        error = "No AI CLI is installed. Deploy the Docker image with the provider CLIs, then authenticate each provider on the host."
-        with closing(db()) as conn:
-            conn.execute("UPDATE tasks SET status='failed', error=?, finished_at=? WHERE id=?",
-                         (error, datetime.now(timezone.utc).isoformat(), task_id))
-            conn.commit()
-        return
-
-    outputs = []
-    errors = []
-    for provider in providers:
-        code, stdout, stderr = await run_cli(provider, f"Task: {task['title']}\n\nUser goal:\n{task['prompt']}\n\nReturn a concise result, assumptions, sources when available, and next steps. Do not send messages, make purchases, change accounts, or perform irreversible external actions.")
-        outputs.append(f"## {provider.title()} result\n{stdout.strip() or '(No output returned.)'}")
-        if code != 0:
-            errors.append(f"{provider}: {stderr.strip() or 'CLI exited with code ' + str(code)}")
-        if requested != "both":
-            break
-
-    combined = "\n\n".join(outputs)[-MAX_RESULT_CHARS:]
-    status_value = "completed" if not errors and any(p.strip() for p in outputs) else "failed"
+    prompt = (
+        "You are Nour, a careful personal AI agent. Complete the user's research, analysis, or drafting task. "
+        "State uncertainty clearly, do not invent sources or claim actions you did not perform, and include useful next steps. "
+        "Do not ask for passwords, expose secrets, send messages, make purchases, change accounts, or perform irreversible external actions.\n\n"
+        f"Task: {task['title']}\n\nUser goal:\n{task['prompt']}"
+    )
+    try:
+        result = await call_gemini(prompt)
+        status_value, error = "completed", None
+    except asyncio.TimeoutError:
+        result, status_value, error = "", "failed", f"Task timed out after {TASK_TIMEOUT_SECONDS} seconds."
+    except Exception as exc:
+        result, status_value = "", "failed"
+        message = str(exc).strip()
+        error = f"{type(exc).__name__}: {message[:1500]}" if message else f"{type(exc).__name__}: Gemini request failed."
     with closing(db()) as conn:
         conn.execute("UPDATE tasks SET status=?, result=?, error=?, finished_at=? WHERE id=?",
-                     (status_value, combined, "\n".join(errors) or None, datetime.now(timezone.utc).isoformat(), task_id))
+                     (status_value, result, error, datetime.now(timezone.utc).isoformat(), task_id))
         conn.commit()
 
 
@@ -219,8 +195,8 @@ def run_task(task_id: int, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=404, detail="Task not found")
         if row["status"] == "running":
             raise HTTPException(status_code=409, detail="Task is already running")
-        if not shutil.which("codex") and not shutil.which("claude"):
-            raise HTTPException(status_code=503, detail="No provider CLI is installed on this host yet.")
+        if not os.environ.get("GEMINI_API_KEY", "").strip():
+            raise HTTPException(status_code=503, detail="Gemini is not configured. Add GEMINI_API_KEY in the host's secret environment settings.")
         conn.execute("UPDATE tasks SET status='queued', error=NULL WHERE id=?", (task_id,))
         conn.commit()
     background_tasks.add_task(execute_task, task_id)
