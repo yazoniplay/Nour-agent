@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
 import sqlite3
@@ -262,6 +263,145 @@ def get_task_result(task_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return dict(row)
+
+
+
+class AgentProfileUpdate(BaseModel):
+    service: str = Field(min_length=1, max_length=2000)
+    target: str = Field(min_length=1, max_length=2000)
+    geography: str = Field(default="", max_length=500)
+    exclusions: str = Field(default="", max_length=2000)
+    monitoring_enabled: bool = False
+
+
+@app.get("/api/profile", dependencies=[Depends(require_access)])
+def get_profile():
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM agent_profile WHERE id=1").fetchone()
+    return {"profile": dict(row)}
+
+
+@app.put("/api/profile", dependencies=[Depends(require_access)])
+def save_profile(payload: AgentProfileUpdate):
+    updated_at = datetime.now(timezone.utc).isoformat()
+    with closing(db()) as conn:
+        conn.execute(
+            """UPDATE agent_profile SET service=?, target=?, geography=?, exclusions=?,
+               monitoring_enabled=?, updated_at=? WHERE id=1""",
+            (payload.service.strip(), payload.target.strip(), payload.geography.strip(),
+             payload.exclusions.strip(), int(payload.monitoring_enabled), updated_at),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM agent_profile WHERE id=1").fetchone()
+    return {"profile": dict(row)}
+
+
+@app.get("/api/leads", dependencies=[Depends(require_access)])
+def list_leads():
+    with closing(db()) as conn:
+        rows = conn.execute("SELECT * FROM leads ORDER BY score DESC, id DESC LIMIT 200").fetchall()
+    return {"leads": [dict(row) for row in rows]}
+
+
+@app.post("/api/prospect", status_code=202, dependencies=[Depends(require_access)])
+def start_prospecting(background_tasks: BackgroundTasks):
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        raise HTTPException(status_code=503, detail="Add GEMINI_API_KEY in Render first.")
+    with closing(db()) as conn:
+        profile = conn.execute("SELECT * FROM agent_profile WHERE id=1").fetchone()
+    if not profile or not profile["service"].strip() or not profile["target"].strip():
+        raise HTTPException(status_code=400, detail="Save your service and ideal client in Settings first.")
+    background_tasks.add_task(prospect_clients)
+    return {"accepted": True, "status": "prospecting"}
+
+
+async def prospect_clients():
+    with closing(db()) as conn:
+        profile = conn.execute("SELECT * FROM agent_profile WHERE id=1").fetchone()
+    if not profile:
+        return
+    prompt = (
+        "You are Nour, a client-acquisition research agent. Find real, specific potential clients for the service below. "
+        "Do not return generic web-search results, directory listings, or famous companies just because they fit the industry. "
+        "Prioritize evidence that the person or organization currently needs, is asking for, or is likely actively buying this exact service. "
+        "Use Google Search to investigate public sources and cite the exact source URL for each candidate. "
+        "Never invent a person, company, email address, buying signal, budget, or source. Only include a contact email if it is explicitly published in a reliable public source; otherwise use an empty string. "
+        "Return at most 8 candidates, ranked best-first, and only include candidates with a credible evidence URL. "
+        "For each candidate provide: name, company, role, email, source_url, evidence (short explanation of the buying signal with date if visible), score (integer 1-100), fit_reason, email_subject, email_body. "
+        "Write a concise, specific, honest outreach draft; do not claim a relationship, result, or capability that the user did not provide. "
+        "Return ONLY valid JSON shaped as {\"leads\":[{...}]}. Do not send any emails.\n\n"
+        f"Service offered: {profile['service']}\n"
+        f"Ideal client / target: {profile['target']}\n"
+        f"Geography: {profile['geography'] or 'Not specified'}\n"
+        f"Exclude: {profile['exclusions'] or 'No exclusions specified'}"
+    )
+    try:
+        raw = await call_gemini(prompt)
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("The model did not return a JSON lead list.")
+        payload = json.loads(raw[start:end + 1])
+        candidates = payload.get("leads", [])
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(db()) as conn:
+            for item in candidates[:8]:
+                name = str(item.get("name", "")).strip()[:200]
+                source_url = str(item.get("source_url", "")).strip()[:1000]
+                if not name or not source_url or not source_url.startswith(("https://", "http://")):
+                    continue
+                email = str(item.get("email", "")).strip()[:320]
+                if email and ("@" not in email or any(c in email for c in "\r\n")):
+                    email = ""
+                score = max(1, min(100, int(item.get("score", 1))))
+                exists = conn.execute("SELECT id FROM leads WHERE source_url=? AND name=?", (source_url, name)).fetchone()
+                if exists:
+                    continue
+                conn.execute(
+                    """INSERT INTO leads (name, company, role, email, source_url, evidence, score, fit_reason,
+                       status, email_subject, email_body, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'needs_review', ?, ?, ?, ?)""",
+                    (name, str(item.get("company", ""))[:200], str(item.get("role", ""))[:200], email,
+                     source_url, str(item.get("evidence", ""))[:2000], score,
+                     str(item.get("fit_reason", ""))[:1000], str(item.get("email_subject", ""))[:300],
+                     str(item.get("email_body", ""))[:5000], now, now),
+                )
+            conn.commit()
+    except Exception as exc:
+        app.state.last_prospecting_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+
+
+@app.post("/api/leads/{lead_id}/approve", dependencies=[Depends(require_access)])
+def approve_lead(lead_id: int):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        conn.execute("UPDATE leads SET status='approved', updated_at=? WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(), lead_id))
+        conn.commit()
+        updated = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+    return {"lead": dict(updated), "message": "Lead approved. Email is still a draft; no message was sent."}
+
+
+@app.post("/api/leads/{lead_id}/dismiss", dependencies=[Depends(require_access)])
+def dismiss_lead(lead_id: int):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT id FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        conn.execute("UPDATE leads SET status='dismissed', updated_at=? WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(), lead_id))
+        conn.commit()
+    return {"ok": True, "status": "dismissed"}
+
+
+@app.get("/api/inbox/status", dependencies=[Depends(require_access)])
+def inbox_status():
+    return {
+        "connected": False,
+        "message": "Inbox integration is not connected yet. Nour does not send emails or read replies until an inbox provider is configured."
+    }
+
 
 
 if __name__ == "__main__":
