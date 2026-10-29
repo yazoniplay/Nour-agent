@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -457,3 +458,17 @@ def build_router(require_access):
         return {"conversations": [dict(r) for r in rows]}
 
     return router
+
+
+async def monitor_gmail_loop():
+    """Check tracked Gmail threads periodically while the host process is awake."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            if get_account():
+                await asyncio.to_thread(lambda: sync_replies(gmail_service()))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A transient Gmail/network error must not kill the monitor loop.
+            continue
