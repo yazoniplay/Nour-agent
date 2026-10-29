@@ -12,11 +12,15 @@ A mobile-first personal-agent command center that can be operated from a phone.
 - Render Blueprint.
 - Read-only / plan-mode execution defaults; the agent is instructed not to send messages, make purchases, change accounts, or perform irreversible actions.
 
+## Dashboard access
+
+The dashboard uses HTTP Basic Authentication. On the first Render Blueprint setup, provide a strong value for `NOUR_ACCESS_PASSWORD` when prompted (or add it under the service's Environment settings). Log in with username `nour` and that password. If this environment variable is missing, protected routes return `503` rather than running an exposed agent. Keep the service URL and password private.
+
 ## Important: subscription sign-in is still required
 
 Nour Agent does not use model API keys. It invokes the official CLI tools installed in the container. Those tools still need to be authenticated with supported account/subscription sign-in on the execution host. This repository does not collect passwords, browser cookies, or OAuth tokens, and the dashboard does not provide a public login-token endpoint.
 
-The current Render setup installs the CLIs, but it does **not** complete their interactive sign-in automatically. Until a provider is authenticated, task runs can fail with a sign-in/authentication error. Do not put account passwords, cookies, access tokens, or other secrets into task prompts or GitHub files.
+The current Render setup installs the CLIs, but it does **not** complete their interactive sign-in automatically. Until a provider is authenticated on the execution host, task runs can fail with a sign-in/authentication error. Render's free service does not provide a reliable persistent interactive CLI login workflow, so the subscription-authentication step still needs to be solved before this becomes a usable always-on agent. Do not put account passwords, cookies, access tokens, or other secrets into task prompts or GitHub files.
 
 Subscription use and usage limits depend on the provider's current terms and account plan. No API keys does not mean unlimited free usage.
 
@@ -31,7 +35,7 @@ The Docker image installs Node.js/npm, `@openai/codex`, and `@anthropic-ai/claud
 
 ### Storage limitation
 
-The included free plan uses `/tmp/nour.db`. Render free instances may sleep and their local filesystem is ephemeral, so tasks/results can be lost after a restart or redeploy. Add durable storage before using this for important work. Do not treat this first deployment as a private or production-ready service: dashboard authentication and durable storage are still required before exposing sensitive tasks.
+The included free plan uses `/tmp/nour.db`. Render free instances may sleep and their local filesystem is ephemeral, so tasks/results can be lost after a restart or redeploy. Add durable storage before using this for important work. Dashboard password protection is included, but this is still an MVP: durable storage, rate limiting, and a more robust authentication/session system are needed before exposing sensitive tasks.
 
 ## API
 
