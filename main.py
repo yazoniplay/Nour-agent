@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import shutil
 import sqlite3
 from contextlib import closing
@@ -9,7 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException\nfrom fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
