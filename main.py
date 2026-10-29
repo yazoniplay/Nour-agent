@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException\nfrom fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,6 +22,19 @@ MAX_RESULT_CHARS = 30000
 
 app = FastAPI(title="Nour Agent", version="0.2.0", description="Mobile-first personal agent dashboard and subscription-CLI task runner.")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+security = HTTPBasic()
+
+
+def require_access(credentials: HTTPBasicCredentials = Depends(security)):
+    expected = os.environ.get("NOUR_ACCESS_PASSWORD", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Set NOUR_ACCESS_PASSWORD in the hosting environment before using Nour Agent.")
+    valid_user = secrets.compare_digest(credentials.username.encode("utf-8"), b"nour")
+    valid_password = secrets.compare_digest(credentials.password.encode("utf-8"), expected.encode("utf-8"))
+    if not (valid_user and valid_password):
+        raise HTTPException(status_code=401, detail="Invalid Nour Agent login", headers={"WWW-Authenticate": "Basic"})
+    return True
+
 
 
 def db():
@@ -78,7 +91,7 @@ def provider_status(name: str):
     }
 
 
-@app.get("/")
+@app.get("/", dependencies=[Depends(require_access)])
 def dashboard():
     return FileResponse(BASE_DIR / "index.html")
 
@@ -88,7 +101,7 @@ def health():
     return {"ok": True, "service": "nour-agent", "version": "0.2.0"}
 
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[Depends(require_access)])
 def status():
     codex = provider_status("codex")
     claude = provider_status("claude")
@@ -100,14 +113,14 @@ def status():
     }
 
 
-@app.get("/api/tasks")
+@app.get("/api/tasks", dependencies=[Depends(require_access)])
 def list_tasks():
     with closing(db()) as conn:
         rows = conn.execute("SELECT * FROM tasks ORDER BY id ASC").fetchall()
     return {"tasks": [task_dict(row) for row in rows]}
 
 
-@app.post("/api/tasks", status_code=201)
+@app.post("/api/tasks", status_code=201, dependencies=[Depends(require_access)])
 def create_task(payload: TaskCreate):
     created_at = datetime.now(timezone.utc).isoformat()
     with closing(db()) as conn:
@@ -196,7 +209,7 @@ async def execute_task(task_id: int):
         conn.commit()
 
 
-@app.post("/api/tasks/{task_id}/run", status_code=202)
+@app.post("/api/tasks/{task_id}/run", status_code=202, dependencies=[Depends(require_access)])
 def run_task(task_id: int, background_tasks: BackgroundTasks):
     with closing(db()) as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -212,7 +225,7 @@ def run_task(task_id: int, background_tasks: BackgroundTasks):
     return {"accepted": True, "task_id": task_id, "status": "queued"}
 
 
-@app.get("/api/tasks/{task_id}")
+@app.get("/api/tasks/{task_id}", dependencies=[Depends(require_access)])
 def get_task(task_id: int):
     with closing(db()) as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -221,7 +234,7 @@ def get_task(task_id: int):
     return {"task": task_dict(row)}
 
 
-@app.get("/api/tasks/{task_id}/result")
+@app.get("/api/tasks/{task_id}/result", dependencies=[Depends(require_access)])
 def get_task_result(task_id: int):
     with closing(db()) as conn:
         row = conn.execute("SELECT id, status, result, error FROM tasks WHERE id = ?", (task_id,)).fetchone()
