@@ -370,6 +370,30 @@ async def prospect_clients():
         app.state.last_prospecting_error = f"{type(exc).__name__}: {str(exc)[:500]}"
 
 
+async def monitoring_loop():
+    while True:
+        await asyncio.sleep(21600)
+        try:
+            with closing(db()) as conn:
+                profile = conn.execute("SELECT * FROM agent_profile WHERE id=1").fetchone()
+            if profile and profile["monitoring_enabled"] and profile["service"].strip() and profile["target"].strip():
+                await prospect_clients()
+        except Exception:
+            continue
+
+
+@app.on_event("startup")
+async def start_monitoring_loop():
+    app.state.monitor_task = asyncio.create_task(monitoring_loop())
+
+
+@app.on_event("shutdown")
+async def stop_monitoring_loop():
+    task = getattr(app.state, "monitor_task", None)
+    if task:
+        task.cancel()
+
+
 @app.post("/api/leads/{lead_id}/approve", dependencies=[Depends(require_access)])
 def approve_lead(lead_id: int):
     with closing(db()) as conn:
