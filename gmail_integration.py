@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import sqlite3
 from contextlib import closing
@@ -11,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import parseaddr
 from pathlib import Path
-from urllib.parse import urlencode
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,7 +24,7 @@ from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
 
 DB_PATH = Path(os.environ.get("NOUR_DB_PATH", str(Path(__file__).resolve().parent / "data" / "nour.db")))
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"]
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
@@ -178,7 +178,7 @@ def make_reply_body(name: str, first_body: str) -> str:
         "If this is relevant to your current priorities, I can share a little more detail. "
         "If not, no worries.\n\n"
         "Best,\n"
-        "Nour"
+        "[Your name]"
     )
 
 
@@ -276,8 +276,8 @@ def send_lead_email(lead_id: int, followup: bool):
         lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found.")
-        if not lead["email"] or "@" not in lead["email"]:
-            raise HTTPException(status_code=400, detail="This lead has no verified email address. Add a verified address before sending.")
+        if not lead["email"] or not re.fullmatch(r"[^@\\s,;<>]+@[^@\\s,;<>]+\\.[^@\\s,;<>]+", lead["email"]):
+            raise HTTPException(status_code=400, detail="This lead has no valid verified email address. Check the address before sending.")
         if followup:
             if lead["status"] != "followup_due":
                 raise HTTPException(status_code=409, detail="A follow-up is only available when it is due and no reply has been detected.")
@@ -303,6 +303,8 @@ def send_lead_email(lead_id: int, followup: bool):
             reply_headers = None
         if not subject.strip() or not body.strip():
             raise HTTPException(status_code=400, detail="Subject and body are required.")
+        if any(c in subject for c in "\\r\\n"):
+            raise HTTPException(status_code=400, detail="Email subject must be a single line.")
         payload = build_message(lead["email"], subject, body, thread_id, reply_headers)
         try:
             sent = service.users().messages().send(userId="me", body=payload).execute()
