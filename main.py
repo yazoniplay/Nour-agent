@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -15,13 +17,15 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("NOUR_DB_PATH", str(BASE_DIR / "data" / "nour.db")))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+TASK_TIMEOUT_SECONDS = int(os.environ.get("NOUR_TASK_TIMEOUT_SECONDS", "600"))
+MAX_RESULT_CHARS = 30000
 
-app = FastAPI(title="Nour Agent", version="0.1.0", description="Mobile-first personal agent dashboard and task queue.")
+app = FastAPI(title="Nour Agent", version="0.2.0", description="Mobile-first personal agent dashboard and subscription-CLI task runner.")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -37,9 +41,16 @@ def init_db():
                 priority TEXT NOT NULL DEFAULT 'normal',
                 status TEXT NOT NULL DEFAULT 'queued',
                 created_at TEXT NOT NULL,
-                result TEXT
+                result TEXT,
+                error TEXT,
+                started_at TEXT,
+                finished_at TEXT
             )
         """)
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        for name, sql_type in (("error", "TEXT"), ("started_at", "TEXT"), ("finished_at", "TEXT")):
+            if name not in existing:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {sql_type}")
         conn.commit()
 
 
@@ -57,6 +68,16 @@ def task_dict(row):
     return {key: row[key] for key in row.keys()}
 
 
+def provider_status(name: str):
+    binary = "codex" if name == "codex" else "claude"
+    installed = shutil.which(binary) is not None
+    return {
+        "installed": installed,
+        "connected": False,
+        "message": "CLI installed; authentication not yet verified" if installed else "CLI is not installed",
+    }
+
+
 @app.get("/")
 def dashboard():
     return FileResponse(BASE_DIR / "index.html")
@@ -64,20 +85,18 @@ def dashboard():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "nour-agent", "version": "0.1.0"}
+    return {"ok": True, "service": "nour-agent", "version": "0.2.0"}
 
 
 @app.get("/api/status")
 def status():
-    # Do not claim provider connectivity until a real, authenticated adapter is configured.
+    codex = provider_status("codex")
+    claude = provider_status("claude")
     return {
         "service": "online",
-        "providers": {
-            "codex": {"connected": False, "message": "Subscription sign-in adapter not configured"},
-            "claude": {"connected": False, "message": "Subscription sign-in adapter not configured"},
-        },
-        "execution_enabled": False,
-        "note": "Task storage works; AI execution is deliberately disabled until provider authentication is configured.",
+        "providers": {"codex": codex, "claude": claude},
+        "execution_enabled": codex["installed"] or claude["installed"],
+        "note": "Execution uses installed CLI tools. Each provider must be authenticated with its supported subscription sign-in on the host.",
     }
 
 
@@ -98,7 +117,99 @@ def create_task(payload: TaskCreate):
         )
         conn.commit()
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return {"task": task_dict(row), "execution": "queued_not_running"}
+    return {"task": task_dict(row), "execution": "queued"}
+
+
+async def run_cli(provider: str, prompt: str) -> tuple[int, str, str]:
+    # Read-only / plan-style operation: task text is passed as one argument, never interpolated into a shell.
+    if provider == "codex":
+        binary = shutil.which("codex")
+        if not binary:
+            return 127, "", "Codex CLI is not installed on the execution host."
+        args = [binary, "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", prompt]
+    else:
+        binary = shutil.which("claude")
+        if not binary:
+            return 127, "", "Claude Code CLI is not installed on the execution host."
+        args = [binary, "-p", "--output-format", "text", "--permission-mode", "plan", prompt]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=str(BASE_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=os.environ.copy(),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TASK_TIMEOUT_SECONDS)
+        return proc.returncode or 0, stdout.decode("utf-8", "replace")[-MAX_RESULT_CHARS:], stderr.decode("utf-8", "replace")[-8000:]
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return 124, "", f"Task timed out after {TASK_TIMEOUT_SECONDS} seconds."
+    except Exception as exc:
+        return 1, "", f"Could not run provider: {type(exc).__name__}: {exc}"
+
+
+async def execute_task(task_id: int):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None or row["status"] not in ("queued", "failed"):
+            return
+        conn.execute("UPDATE tasks SET status='running', started_at=?, error=NULL WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(), task_id))
+        conn.commit()
+        task = task_dict(row)
+
+    requested = task["provider"]
+    if requested == "both":
+        providers = ["codex", "claude"]
+    elif requested == "auto":
+        providers = [name for name in ("codex", "claude") if shutil.which(name)]
+        providers = providers[:1]
+    else:
+        providers = [requested]
+
+    if not providers:
+        error = "No AI CLI is installed. Deploy the Docker image with the provider CLIs, then authenticate each provider on the host."
+        with closing(db()) as conn:
+            conn.execute("UPDATE tasks SET status='failed', error=?, finished_at=? WHERE id=?",
+                         (error, datetime.now(timezone.utc).isoformat(), task_id))
+            conn.commit()
+        return
+
+    outputs = []
+    errors = []
+    for provider in providers:
+        code, stdout, stderr = await run_cli(provider, f"Task: {task['title']}\n\nUser goal:\n{task['prompt']}\n\nReturn a concise result, assumptions, sources when available, and next steps. Do not send messages, make purchases, change accounts, or perform irreversible external actions.")
+        outputs.append(f"## {provider.title()} result\n{stdout.strip() or '(No output returned.)'}")
+        if code != 0:
+            errors.append(f"{provider}: {stderr.strip() or 'CLI exited with code ' + str(code)}")
+        if requested != "both":
+            break
+
+    combined = "\n\n".join(outputs)[-MAX_RESULT_CHARS:]
+    status_value = "completed" if not errors and any(p.strip() for p in outputs) else "failed"
+    with closing(db()) as conn:
+        conn.execute("UPDATE tasks SET status=?, result=?, error=?, finished_at=? WHERE id=?",
+                     (status_value, combined, "\n".join(errors) or None, datetime.now(timezone.utc).isoformat(), task_id))
+        conn.commit()
+
+
+@app.post("/api/tasks/{task_id}/run", status_code=202)
+def run_task(task_id: int, background_tasks: BackgroundTasks):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if row["status"] == "running":
+            raise HTTPException(status_code=409, detail="Task is already running")
+        if not shutil.which("codex") and not shutil.which("claude"):
+            raise HTTPException(status_code=503, detail="No provider CLI is installed on this host yet.")
+        conn.execute("UPDATE tasks SET status='queued', error=NULL WHERE id=?", (task_id,))
+        conn.commit()
+    background_tasks.add_task(execute_task, task_id)
+    return {"accepted": True, "task_id": task_id, "status": "queued"}
 
 
 @app.get("/api/tasks/{task_id}")
@@ -113,10 +224,10 @@ def get_task(task_id: int):
 @app.get("/api/tasks/{task_id}/result")
 def get_task_result(task_id: int):
     with closing(db()) as conn:
-        row = conn.execute("SELECT id, status, result FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        row = conn.execute("SELECT id, status, result, error FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"id": row["id"], "status": row["status"], "result": row["result"]}
+    return dict(row)
 
 
 if __name__ == "__main__":
