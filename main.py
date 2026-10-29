@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-from gmail_integration import build_router
+from gmail_integration import build_router, monitor_gmail_loop
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("NOUR_DB_PATH", str(BASE_DIR / "data" / "nour.db")))
@@ -386,6 +386,7 @@ async def monitoring_loop():
 @app.on_event("startup")
 async def start_monitoring_loop():
     app.state.monitor_task = asyncio.create_task(monitoring_loop())
+    app.state.gmail_monitor_task = asyncio.create_task(monitor_gmail_loop())
 
 
 @app.on_event("shutdown")
@@ -393,6 +394,9 @@ async def stop_monitoring_loop():
     task = getattr(app.state, "monitor_task", None)
     if task:
         task.cancel()
+    gmail_task = getattr(app.state, "gmail_monitor_task", None)
+    if gmail_task:
+        gmail_task.cancel()
 
 
 @app.post("/api/leads/{lead_id}/approve", dependencies=[Depends(require_access)])
