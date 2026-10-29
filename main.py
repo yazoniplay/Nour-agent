@@ -81,6 +81,31 @@ def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS activity_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                icon TEXT NOT NULL DEFAULT '·',
+                message TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                progress INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS prospect_runs (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                run_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'idle',
+                stage TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                progress INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                finished_at TEXT
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO prospect_runs (id, run_id, status, stage, detail, progress) VALUES (1, '', 'idle', '', 'Waiting for a task', 0)")
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -312,15 +337,41 @@ def start_prospecting(background_tasks: BackgroundTasks):
         profile = conn.execute("SELECT * FROM agent_profile WHERE id=1").fetchone()
     if not profile or not profile["service"].strip() or not profile["target"].strip():
         raise HTTPException(status_code=400, detail="Save your service and ideal client in Settings first.")
-    background_tasks.add_task(prospect_clients)
-    return {"accepted": True, "status": "prospecting"}
+    run_id = secrets.token_hex(8)
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(db()) as conn:
+        conn.execute("UPDATE prospect_runs SET run_id=?, status='queued', stage='queued', detail='Research run accepted; preparing the search.', progress=3, started_at=?, finished_at=NULL WHERE id=1", (run_id, now))
+        conn.execute("INSERT INTO activity_events (run_id,stage,icon,message,detail,progress,created_at) VALUES (?,?,?,?,?,?,?)", (run_id,"queued","↗","Research run queued","Nour accepted the request and is preparing a targeted client search.",3,now))
+        conn.commit()
+    background_tasks.add_task(prospect_clients, run_id)
+    return {"accepted": True, "status": "prospecting", "run_id": run_id}
 
 
-async def prospect_clients():
+def activity_update(run_id: str, stage: str, icon: str, message: str, detail: str, progress: int, status: str = "running"):
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(db()) as conn:
+        conn.execute("UPDATE prospect_runs SET status=?, stage=?, detail=?, progress=?, finished_at=? WHERE id=1 AND run_id=?", (status,stage,detail,progress,now if status in ("completed","failed") else None,run_id))
+        conn.execute("INSERT INTO activity_events (run_id,stage,icon,message,detail,progress,created_at) VALUES (?,?,?,?,?,?,?)", (run_id,stage,icon,message,detail,progress,now))
+        conn.commit()
+
+
+@app.get("/api/activity", dependencies=[Depends(require_access)])
+def get_activity(after_id: int = 0):
+    with closing(db()) as conn:
+        run = conn.execute("SELECT run_id,status,stage,detail,progress,started_at,finished_at FROM prospect_runs WHERE id=1").fetchone()
+        rows = conn.execute("SELECT id,run_id,stage,icon,message,detail,progress,created_at FROM activity_events WHERE id>? ORDER BY id ASC LIMIT 100", (after_id,)).fetchall()
+    return {"run": dict(run) if run else None, "events": [dict(row) for row in rows]}
+
+
+async def prospect_clients(run_id: str | None = None):
+    run_id = run_id or secrets.token_hex(8)
+    activity_update(run_id, "profile", "◎", "Loading your client criteria", "Reading your service, ideal client, geography and exclusions.", 10)
     with closing(db()) as conn:
         profile = conn.execute("SELECT * FROM agent_profile WHERE id=1").fetchone()
-    if not profile:
+    if not profile or not profile["service"].strip() or not profile["target"].strip():
+        activity_update(run_id, "failed", "!", "Search stopped: setup is incomplete", "Save your service and ideal client before searching.", 100, "failed")
         return
+    activity_update(run_id, "search", "⌕", "Searching for real buying signals", "Gemini is researching public sources for prospects that match your criteria; this can take a little while.", 25)
     prompt = (
         "You are Nour, a client-acquisition research agent. Find real, specific potential clients for the service below. "
         "Do not return generic web-search results, directory listings, or famous companies just because they fit the industry. "
@@ -337,18 +388,23 @@ async def prospect_clients():
         f"Exclude: {profile['exclusions'] or 'No exclusions specified'}"
     )
     try:
+        activity_update(run_id, "analysis", "✳", "Evaluating prospects with Gemini", "Comparing relevance, visible intent, evidence quality and service fit. Model: " + GEMINI_MODEL, 45)
         raw = await call_gemini(prompt)
+        activity_update(run_id, "validation", "✓", "Checking evidence and removing duplicates", "Validating source URLs, contact details and duplicate candidates before saving.", 72)
         start, end = raw.find("{"), raw.rfind("}")
         if start < 0 or end <= start:
             raise ValueError("The model did not return a JSON lead list.")
         payload = json.loads(raw[start:end + 1])
         candidates = payload.get("leads", [])
         now = datetime.now(timezone.utc).isoformat()
+        saved = 0
+        skipped = 0
         with closing(db()) as conn:
             for item in candidates[:8]:
                 name = str(item.get("name", "")).strip()[:200]
                 source_url = str(item.get("source_url", "")).strip()[:1000]
                 if not name or not source_url or not source_url.startswith(("https://", "http://")):
+                    skipped += 1
                     continue
                 email = str(item.get("email", "")).strip()[:320]
                 if email and ("@" not in email or any(c in email for c in "\r\n")):
@@ -356,6 +412,7 @@ async def prospect_clients():
                 score = max(1, min(100, int(item.get("score", 1))))
                 exists = conn.execute("SELECT id FROM leads WHERE source_url=? AND name=?", (source_url, name)).fetchone()
                 if exists:
+                    skipped += 1
                     continue
                 conn.execute(
                     """INSERT INTO leads (name, company, role, email, source_url, evidence, score, fit_reason,
@@ -366,9 +423,13 @@ async def prospect_clients():
                      str(item.get("fit_reason", ""))[:1000], str(item.get("email_subject", ""))[:300],
                      str(item.get("email_body", ""))[:5000], now, now),
                 )
+                saved += 1
             conn.commit()
+        activity_update(run_id, "completed", "✓", f"Search complete — {saved} new prospects saved", f"Reviewed up to {min(len(candidates), 8)} candidates; {saved} new leads saved and {skipped} skipped as duplicates or invalid evidence. Email drafts remain unsent for review.", 100, "completed")
     except Exception as exc:
-        app.state.last_prospecting_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+        error = f"{type(exc).__name__}: {str(exc)[:500]}"
+        app.state.last_prospecting_error = error
+        activity_update(run_id, "failed", "!", "Prospecting failed", error, 100, "failed")
 
 
 async def monitoring_loop():
