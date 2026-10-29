@@ -1,74 +1,66 @@
 # Nour Agent
 
-A mobile-first client-acquisition workspace. Configure the service you offer and the clients you want; Nour researches public buying signals, ranks prospects, stores evidence, and drafts personalized outreach using Gemini 3.5 Flash-Lite.
+Nour is a mobile-first client-acquisition workspace using Gemini 3.5 Flash-Lite. It researches public buying signals, ranks prospects, drafts outreach, and can connect one Gmail account for **reviewed sending and tracked replies**.
 
-## Implemented
+## Current Gmail workflow
 
-- Minimal client-pipeline dashboard with service/ideal-client settings.
-- Prospect discovery using Google Search grounding, evidence URLs, fit scores, and duplicate checks.
-- Personalized email drafts with explicit review; no email is sent automatically.
-- Optional six-hour prospecting loop while the web service process is running.
-- FastAPI backend and SQLite task queue.
-- Background task execution using the official Google Gen AI Python SDK; tasks start automatically when created.
-- Google Search grounding for autonomous web research and source-informed answers.
-- Research, analysis, and outreach drafting; no automatic message sending or purchases.
-- Gemini model selection through the `GEMINI_MODEL` environment variable.
-- Render Blueprint and dashboard password protection.
-- Task status, result, and error display.
-- Inbox status placeholder; sending email and monitoring replies require a separately configured email-provider integration.
-- Safety-focused task instructions for research, analysis, and drafting.
+- Connect Gmail through Google's OAuth consent flow; refresh tokens are encrypted at rest using `NOUR_TOKEN_ENCRYPTION_KEY`.
+- Uses `gmail.readonly` and `gmail.send`; it does not need permission to delete or modify mailbox messages.
+- The implementation only fetches Gmail threads associated with emails sent from Nour. The OAuth read scope itself is broader, so only connect an account you control or are authorized to use.
+- First outreach is only sendable after you approve the lead, review/edit the subject and body, and confirm the send action.
+- Nour checks tracked threads every five minutes while the service process is awake, plus a manual **Sync now** button.
+- Replies are detected by comparing messages in each tracked thread against the connected account and original send time. Reply snippets and status appear in Inbox.
+- A follow-up becomes due three days after the initial email if no reply is detected. Its subject and body must be reviewed, saved, and explicitly confirmed before sending.
+- Disconnecting Gmail removes the stored refresh token from the app database. You can also revoke Nour in your Google Account's third-party access settings.
+- It does **not** auto-send outreach, auto-reply to people, or auto-send follow-ups.
+
+## Set up Gmail OAuth
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/), create/select a project, and enable the **Gmail API**.
+2. Configure the OAuth consent screen. For private testing, keep the app in **Testing** and add the Google account you will connect as a test user.
+3. Create an OAuth client ID of type **Web application**.
+4. In **Authorized redirect URIs**, add the exact URL: `https://YOUR-RENDER-SERVICE.onrender.com/oauth/gmail/callback` (replace the hostname with your real Render service URL).
+5. In Render → your `nour-agent` service → **Environment**, add these secret environment variables:
+   - `GOOGLE_CLIENT_ID` — OAuth client ID
+   - `GOOGLE_CLIENT_SECRET` — OAuth client secret
+   - `GOOGLE_REDIRECT_URI` — exact callback URL from step 4
+   - `NOUR_TOKEN_ENCRYPTION_KEY` — a valid Fernet key, generated privately; never commit it to GitHub
+6. Save and redeploy. Open Nour → **Inbox** → **Connect Gmail**, sign in, and review Google's requested permissions.
+7. After connecting, approve a lead, review its draft, then use **Review & send**. Replies and due follow-ups will appear under Inbox.
+
+Google's OAuth testing mode expires authorizations/refresh tokens after seven days when scopes beyond basic identity are requested, so a test setup may need reconnecting weekly. Public use of Gmail restricted scopes can require Google's verification and a security assessment. See Google's [OAuth restricted-scope guidance](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification) and [testing-mode behavior](https://support.google.com/cloud/answer/15549945?hl=en).
 
 ## Set up Gemini
 
-1. Open [Google AI Studio](https://aistudio.google.com/) and create a Gemini API key. The API has a free tier with model and rate limits; check the current terms and usage dashboard.
-2. In Render, open your `nour-agent` service → **Environment**.
-3. Add `GEMINI_API_KEY` as a secret environment variable. Never put the key in `index.html`, a task prompt, or a GitHub commit.
-4. Set `GEMINI_MODEL` to a model available to your API project. The Blueprint default is `gemini-3.5-flash-lite`.
-5. Save changes and redeploy. Open the private service URL and log in.
+1. Open [Google AI Studio](https://aistudio.google.com/) and create a Gemini API key.
+2. Add `GEMINI_API_KEY` as a secret in Render. Never put it in browser code or a GitHub commit.
+3. The Blueprint default model is `gemini-3.5-flash-lite`; set `GEMINI_MODEL` to a model available to your API project if needed.
+4. Set a strong `NOUR_ACCESS_PASSWORD` in Render. Log in with username `nour` and that password.
 
-The Gemini website's free chat plan and the Gemini Developer API are separate products. Nour uses the API key, and API usage follows the API's free-tier limits; it is not unlimited.
+The Gemini website's free chat plan and Gemini Developer API are separate products. API use follows the limits and pricing shown in Google AI Studio.
 
-## Dashboard access
+## Deploy
 
-The dashboard uses HTTP Basic Authentication. Set a strong `NOUR_ACCESS_PASSWORD` in Render. Log in with username `nour` and that password. If the variable is missing, protected routes return `503` rather than exposing the dashboard. Keep the service URL and password private.
+1. Connect this repository to Render as a Blueprint using `render.yaml`.
+2. Supply `NOUR_ACCESS_PASSWORD`, `GEMINI_API_KEY`, and the Gmail OAuth values above.
+3. Wait for the build/deploy to finish, then open the Render URL.
 
-## Deploy to Render
+## Limitations to understand
 
-1. Open the Render dashboard and choose **New → Blueprint**.
-2. Connect this repository and apply `render.yaml`.
-3. When prompted, provide values for `NOUR_ACCESS_PASSWORD` and `GEMINI_API_KEY` in the service environment settings.
-4. Wait for the Docker build and deployment to complete.
-5. Open the deployed service URL.
+- **Not yet live-verified:** the Gmail integration is committed to the repository, but OAuth setup and real Gmail sending/reply detection must be tested against your own configured Google Cloud project and Render URL.
+- Free Render services can sleep. Background Gmail checks run only while the process is awake; use **Sync now** for an immediate check. This is not guaranteed 24/7 monitoring.
+- `render.yaml` currently uses `/tmp/nour.db`, which is ephemeral on free hosting. A restart/redeploy can erase leads, tracked threads, and encrypted OAuth tokens; durable storage is needed for reliable long-term tracking.
+- The app stores a reply snippet for convenience, not a full message archive. It does not autonomously compose or send a reply to an incoming message.
+- Email addresses and source evidence found by the prospecting model must be checked. No email is sent until you explicitly review and confirm it.
 
-## Storage limitation
+## API overview
 
-The included free plan uses `/tmp/nour.db`. Render free instances may sleep and their local filesystem is ephemeral, so tasks/results can be lost after a restart or redeploy. Add durable storage before using this for important work. This is still an MVP: durable storage, rate limiting, and a more robust authentication/session system are needed before exposing sensitive tasks.
-
-## API
-
-- `GET /` — protected dashboard
-- `GET /api/health` — public health check
-- `GET /api/status` — Gemini configuration status (protected)
-- `GET /api/tasks` — list tasks (protected)
-- `POST /api/tasks` — create a task (protected)
-- `POST /api/tasks/{id}/run` — run a queued task with Gemini (protected)
-- `GET /api/tasks/{id}` — read task details (protected)
-- `GET /api/tasks/{id}/result` — read task result/error (protected)
-
-## Execution behavior
-
-- Tasks use the configured Gemini Developer API model.
-- Tasks time out after 10 minutes by default; configure `NOUR_TASK_TIMEOUT_SECONDS`.
-- `GEMINI_API_KEY` is read only on the server from the environment.
-- Nour can autonomously research public web information with Google Search, analyze evidence, and produce finished outputs or draft outreach. It does not send emails, contact prospects, make purchases, or perform irreversible external actions. Google Search grounding and Gemini API usage are subject to the limits and pricing shown in your Google AI Studio project.
-
-
-## Client pipeline
-
-1. Open **Setup** and enter your service, ideal client, geography, and exclusions.
-2. Choose **Find clients** to start a prospecting run.
-3. Nour asks Gemini 3.5 Flash-Lite to identify real prospects with public evidence, score them, and draft a personalized first email. Leads without a credible source URL are discarded; unverified email addresses are left blank.
-4. Review each source and draft. **Keep lead** saves it as approved for your pipeline; it does not send an email.
-5. Optional recurring prospecting can be enabled in Setup. It checks every six hours while the app process is running, but the free Render instance may sleep.
-
-Email sending, inbox reply detection, follow-up scheduling, and automatic responses are not implemented yet. Do not treat generated leads or email addresses as verified until you check the cited source.
+- `GET /api/inbox/status` — Gmail configuration and connection status
+- `GET /api/gmail/connect` — start Google OAuth
+- `GET /oauth/gmail/callback` — OAuth callback
+- `POST /api/gmail/sync` — sync tracked Gmail threads
+- `GET /api/gmail/conversations` — tracked conversations and follow-up status
+- `PUT /api/gmail/leads/{id}/draft` — save a reviewed first-email or follow-up draft
+- `POST /api/gmail/leads/{id}/send` — send a reviewed first email
+- `POST /api/gmail/leads/{id}/send-followup` — send a reviewed due follow-up
+- `POST /api/gmail/disconnect` — disconnect Gmail
