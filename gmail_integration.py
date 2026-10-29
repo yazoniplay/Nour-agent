@@ -276,7 +276,7 @@ def send_lead_email(lead_id: int, followup: bool):
         lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
         if not lead:
             raise HTTPException(status_code=404, detail="Lead not found.")
-        if not lead["email"] or not re.fullmatch(r"[^@\\s,;<>]+@[^@\\s,;<>]+\\.[^@\\s,;<>]+", lead["email"]):
+        if not lead["email"] or not re.fullmatch(r"[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+", lead["email"]):
             raise HTTPException(status_code=400, detail="This lead has no valid verified email address. Check the address before sending.")
         if followup:
             if lead["status"] != "followup_due":
