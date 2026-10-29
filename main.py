@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+from gmail_integration import build_router
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("NOUR_DB_PATH", str(BASE_DIR / "data" / "nour.db")))
@@ -25,7 +26,7 @@ TASK_TIMEOUT_SECONDS = int(os.environ.get("NOUR_TASK_TIMEOUT_SECONDS", "600"))
 MAX_RESULT_CHARS = 30000
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
-app = FastAPI(title="Nour Agent", version="0.5.0", description="Client-acquisition pipeline powered by Gemini 3.5 Flash-Lite.")
+app = FastAPI(title="Nour Agent", version="0.6.0", description="Client-acquisition pipeline with reviewed Gmail outreach.")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
 
@@ -135,7 +136,7 @@ def dashboard():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "nour-agent", "version": "0.5.0"}
+    return {"ok": True, "service": "nour-agent", "version": "0.6.0"}
 
 
 @app.get("/api/status", dependencies=[Depends(require_access)])
@@ -419,13 +420,7 @@ def dismiss_lead(lead_id: int):
     return {"ok": True, "status": "dismissed"}
 
 
-@app.get("/api/inbox/status", dependencies=[Depends(require_access)])
-def inbox_status():
-    return {
-        "connected": False,
-        "message": "Inbox integration is not connected yet. Nour does not send emails or read replies until an inbox provider is configured."
-    }
-
+app.include_router(build_router(require_access))
 
 
 if __name__ == "__main__":
