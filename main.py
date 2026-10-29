@@ -67,6 +67,40 @@ def init_db():
         for name, sql_type in (("error", "TEXT"), ("started_at", "TEXT"), ("finished_at", "TEXT")):
             if name not in existing:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {sql_type}")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_profile (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                service TEXT NOT NULL DEFAULT '',
+                target TEXT NOT NULL DEFAULT '',
+                geography TEXT NOT NULL DEFAULT '',
+                exclusions TEXT NOT NULL DEFAULT '',
+                monitoring_enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                company TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT '',
+                email TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL DEFAULT '',
+                score INTEGER NOT NULL DEFAULT 0,
+                fit_reason TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'new',
+                email_subject TEXT NOT NULL DEFAULT '',
+                email_body TEXT NOT NULL DEFAULT '',
+                reply_summary TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO agent_profile (id, service, target, geography, exclusions, monitoring_enabled, updated_at)
+            VALUES (1, '', '', '', '', 0, ?)
+        """, (datetime.now(timezone.utc).isoformat(),))
         conn.commit()
 
 
