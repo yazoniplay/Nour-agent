@@ -15,4 +15,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile Python source
-        run: python -m compileall -q main.py
+        run: python -m compileall -q main.py gmail_integration.py
