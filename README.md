@@ -1,10 +1,13 @@
 # Nour Agent
 
-A mobile-first autonomous-agent command center that can be operated from a phone. It uses Gemini 3.5 Flash-Lite and Google Search grounding for web-informed task completion.
+A mobile-first client-acquisition workspace. Configure the service you offer and the clients you want; Nour researches public buying signals, ranks prospects, stores evidence, and drafts personalized outreach using Gemini 3.5 Flash-Lite.
 
 ## Implemented
 
-- Responsive dashboard and task creation.
+- Minimal client-pipeline dashboard with service/ideal-client settings.
+- Prospect discovery using Google Search grounding, evidence URLs, fit scores, and duplicate checks.
+- Personalized email drafts with explicit review; no email is sent automatically.
+- Optional six-hour prospecting loop while the web service process is running.
 - FastAPI backend and SQLite task queue.
 - Background task execution using the official Google Gen AI Python SDK; tasks start automatically when created.
 - Google Search grounding for autonomous web research and source-informed answers.
@@ -12,6 +15,7 @@ A mobile-first autonomous-agent command center that can be operated from a phone
 - Gemini model selection through the `GEMINI_MODEL` environment variable.
 - Render Blueprint and dashboard password protection.
 - Task status, result, and error display.
+- Inbox status placeholder; sending email and monitoring replies require a separately configured email-provider integration.
 - Safety-focused task instructions for research, analysis, and drafting.
 
 ## Set up Gemini
@@ -57,3 +61,14 @@ The included free plan uses `/tmp/nour.db`. Render free instances may sleep and 
 - Tasks time out after 10 minutes by default; configure `NOUR_TASK_TIMEOUT_SECONDS`.
 - `GEMINI_API_KEY` is read only on the server from the environment.
 - Nour can autonomously research public web information with Google Search, analyze evidence, and produce finished outputs or draft outreach. It does not send emails, contact prospects, make purchases, or perform irreversible external actions. Google Search grounding and Gemini API usage are subject to the limits and pricing shown in your Google AI Studio project.
+
+
+## Client pipeline
+
+1. Open **Setup** and enter your service, ideal client, geography, and exclusions.
+2. Choose **Find clients** to start a prospecting run.
+3. Nour asks Gemini 3.5 Flash-Lite to identify real prospects with public evidence, score them, and draft a personalized first email. Leads without a credible source URL are discarded; unverified email addresses are left blank.
+4. Review each source and draft. **Keep lead** saves it as approved for your pipeline; it does not send an email.
+5. Optional recurring prospecting can be enabled in Setup. It checks every six hours while the app process is running, but the free Render instance may sleep.
+
+Email sending, inbox reply detection, follow-up scheduling, and automatic responses are not implemented yet. Do not treat generated leads or email addresses as verified until you check the cited source.
