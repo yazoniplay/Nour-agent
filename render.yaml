@@ -14,7 +14,7 @@ services:
       - key: NOUR_TASK_TIMEOUT_SECONDS
         value: "600"
       - key: GEMINI_MODEL
-        value: gemini-3.8-flash
+        value: gemini-3.5-flash-lite
       - key: GEMINI_API_KEY
         sync: false
       - key: NOUR_ACCESS_PASSWORD
