@@ -14,6 +14,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -21,9 +22,9 @@ DB_PATH = Path(os.environ.get("NOUR_DB_PATH", str(BASE_DIR / "data" / "nour.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 TASK_TIMEOUT_SECONDS = int(os.environ.get("NOUR_TASK_TIMEOUT_SECONDS", "600"))
 MAX_RESULT_CHARS = 30000
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
-app = FastAPI(title="Nour Agent", version="0.3.0", description="Mobile-first personal agent dashboard powered by Gemini.")
+app = FastAPI(title="Nour Agent", version="0.4.0", description="Autonomous, web-grounded personal agent powered by Gemini 3.5 Flash-Lite.")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
 
@@ -145,6 +146,9 @@ async def call_gemini(prompt: str) -> str:
                 client.models.generate_content,
                 model=GEMINI_MODEL,
                 contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())]
+                ),
             ),
             timeout=TASK_TIMEOUT_SECONDS,
         )
@@ -167,9 +171,10 @@ async def execute_task(task_id: int):
         task = task_dict(row)
 
     prompt = (
-        "You are Nour, a careful personal AI agent. Complete the user's research, analysis, or drafting task. "
-        "State uncertainty clearly, do not invent sources or claim actions you did not perform, and include useful next steps. "
-        "Do not ask for passwords, expose secrets, send messages, make purchases, change accounts, or perform irreversible external actions.\n\n"
+        "You are Nour, an autonomous personal AI agent powered by Gemini 3.5 Flash-Lite. "
+        "Take ownership of the user's goal: investigate it, use Google Search when current or verifiable information would help, compare evidence, reason through the task, and deliver a finished result rather than only a plan. "
+        "Cite useful source URLs when web research is used, distinguish facts from estimates, state uncertainty clearly, and never invent sources or claim actions you did not perform. "
+        "You may research, analyze, organize information, and draft outreach, but must not send messages, make purchases, change accounts, request passwords, expose secrets, or perform irreversible external actions.\n\n"
         f"Task: {task['title']}\n\nUser goal:\n{task['prompt']}"
     )
     try:
