@@ -123,7 +123,7 @@ def list_tasks():
 
 
 @app.post("/api/tasks", status_code=201, dependencies=[Depends(require_access)])
-def create_task(payload: TaskCreate):
+def create_task(payload: TaskCreate, background_tasks: BackgroundTasks):
     created_at = datetime.now(timezone.utc).isoformat()
     with closing(db()) as conn:
         cur = conn.execute(
@@ -132,7 +132,11 @@ def create_task(payload: TaskCreate):
         )
         conn.commit()
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cur.lastrowid,)).fetchone()
-    return {"task": task_dict(row), "execution": "queued"}
+    execution = "waiting_for_api_key"
+    if os.environ.get("GEMINI_API_KEY", "").strip():
+        background_tasks.add_task(execute_task, cur.lastrowid)
+        execution = "started"
+    return {"task": task_dict(row), "execution": execution}
 
 
 async def call_gemini(prompt: str) -> str:
