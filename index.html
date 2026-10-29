@@ -33,7 +33,7 @@
 <div><label class="field-label" for="taskTitle">Task name</label><input class="field" id="taskTitle" maxlength="120" placeholder="e.g. Find 10 businesses looking for a new website" required></div>
 <div><label class="field-label" for="taskPrompt">What should Nour do?</label><textarea id="taskPrompt" maxlength="5000" placeholder="Describe the goal, requirements, and what a good result looks like…" required></textarea></div>
 <div class="row"><div><label class="field-label" for="provider">AI provider</label><select id="provider"><option value="auto">Auto (choose later)</option><option value="codex">ChatGPT / Codex</option><option value="claude">Claude Code</option><option value="both">Both (planned)</option></select></div><div><label class="field-label" for="priority">Priority</label><select id="priority"><option value="normal">Normal</option><option value="high">High</option><option value="low">Low</option></select></div></div>
-<div class="form-bottom"><span class="hint">Tasks are queued; AI execution needs provider setup.</span><button class="primary" type="submit">Create task ↗</button></div>
+<div class="form-bottom"><span class="hint">Run with an authenticated CLI; execution is read-only / plan mode.</span><button class="primary" type="submit">Create task ↗</button></div>
 </form>
 <div class="divider"></div><div class="panel-head"><h2>Recent tasks</h2><button id="refreshBtn" style="border:0;background:none;color:var(--muted);font-size:12px">↻ Refresh</button></div><div class="task-list" id="taskList"><div class="empty">No tasks yet. Create your first task above.</div></div>
 </div>
