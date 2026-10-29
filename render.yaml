@@ -1,13 +1,15 @@
 services:
   - type: web
     name: nour-agent
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
       - key: NOUR_DB_PATH
         value: /tmp/nour.db
+      - key: NOUR_TASK_TIMEOUT_SECONDS
+        value: "600"
