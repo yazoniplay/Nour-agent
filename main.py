@@ -25,7 +25,7 @@ TASK_TIMEOUT_SECONDS = int(os.environ.get("NOUR_TASK_TIMEOUT_SECONDS", "600"))
 MAX_RESULT_CHARS = 30000
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
-app = FastAPI(title="Nour Agent", version="0.4.0", description="Autonomous, web-grounded personal agent powered by Gemini 3.5 Flash-Lite.")
+app = FastAPI(title="Nour Agent", version="0.5.0", description="Client-acquisition pipeline powered by Gemini 3.5 Flash-Lite.")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
 
@@ -135,7 +135,7 @@ def dashboard():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "nour-agent", "version": "0.3.0"}
+    return {"ok": True, "service": "nour-agent", "version": "0.5.0"}
 
 
 @app.get("/api/status", dependencies=[Depends(require_access)])
