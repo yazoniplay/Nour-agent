@@ -270,6 +270,11 @@ def build_message(to: str, subject: str, body: str, thread_id: str | None = None
     return payload
 
 
+def subject_has_line_break(subject: str) -> bool:
+    """Return True only for actual CR/LF header injection characters."""
+    return "\r" in subject or "\n" in subject
+
+
 def send_lead_email(lead_id: int, followup: bool):
     service = gmail_service()
     with closing(gmail_db()) as conn:
@@ -303,7 +308,7 @@ def send_lead_email(lead_id: int, followup: bool):
             reply_headers = None
         if not subject.strip() or not body.strip():
             raise HTTPException(status_code=400, detail="Subject and body are required.")
-        if any(c in subject for c in "\\r\\n"):
+        if subject_has_line_break(subject):
             raise HTTPException(status_code=400, detail="Email subject must be a single line.")
         payload = build_message(lead["email"], subject, body, thread_id, reply_headers)
         try:
