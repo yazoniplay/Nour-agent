@@ -13,3 +13,5 @@ services:
         value: /tmp/nour.db
       - key: NOUR_TASK_TIMEOUT_SECONDS
         value: "600"
+      - key: NOUR_ACCESS_PASSWORD
+        sync: false
